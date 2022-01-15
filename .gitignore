@@ -1,0 +1,4 @@
+content/*
+output/*
+.vscode/*
+__pycache__/

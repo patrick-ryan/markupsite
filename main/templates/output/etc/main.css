@@ -1,0 +1,71 @@
+:root {
+    --color-background: #22272e;
+    --color-border: #697278;
+    --color-text-default: #9ea8b4;
+    --color-base: #293238;
+    --color-accent: #ec1a62;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --color-background: #ffffff;
+        --color-border: #cacfd5;
+        --color-text-default: #0b1016;
+        --color-base: #f4f5f6;
+        --color-accent: #ba0d37;
+    }
+}
+
+body {
+    background: var(--color-background);
+    color: var(--color-text-default);
+    border-color: var(--color-border);
+    accent-color: var(--color-accent);
+    
+    font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
+    font-size: 16px;
+
+    margin: 0;
+
+    display: flex;
+    flex-direction: row
+}
+
+#menu {
+    /* give menu space to load there without altering content position */
+    width: 205px;
+}
+
+#menu-title {
+    opacity: 0.1;
+}
+
+#content {
+    margin-left: 10px;
+
+    flex: 1;
+}
+
+#title {
+    color: rgb(78, 45, 45);
+    text-align: center;
+    font-size: 78px;
+    position: absolute;
+    width: 100%;
+    cursor: not-allowed;
+    height: 100%;
+}
+
+/* Browser specific (not valid) styles to make preformatted text wrap */		
+
+#content pre.language-_warn {
+    overflow: inherit;
+}
+
+pre > code.language-_warn {
+    white-space: pre-wrap;       /* css-3 */
+    white-space: -moz-pre-wrap;  /* Mozilla, since 1999 */
+    white-space: -pre-wrap;      /* Opera 4-6 */
+    white-space: -o-pre-wrap;    /* Opera 7 */
+    word-wrap: break-word;       /* Internet Explorer 5.5+ */
+}
