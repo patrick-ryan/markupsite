@@ -43,20 +43,20 @@ class DataMenu extends HTMLElement {
         var clone = template.content.cloneNode(true);
         var container = clone.getElementById("container");
 
-        const data_path = this.getAttribute('data');
-        fetch(data_path)
+        const dataPath = this.getAttribute('data');
+        fetch(dataPath)
             .then(response => response.json())
             .then(data => {
                 for (const item of data){
-                    const menu_item = document.createElement('div');
-                    menu_item.setAttribute('class', 'menu-item');
-                    menu_item.textContent = item.name;
-                    menu_item.addEventListener(
+                    const menuItem = document.createElement('div');
+                    menuItem.setAttribute('class', 'menu-item');
+                    menuItem.textContent = item.name;
+                    menuItem.addEventListener(
                         "click",
                         _ => window.location.href = item.url
                     );
 
-                    container.appendChild(menu_item);                    
+                    container.appendChild(menuItem);                    
                 }
                 shadow.appendChild(clone);
             });
