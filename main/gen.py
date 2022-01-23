@@ -1,6 +1,5 @@
 """
 TODO:
- - republish old article
  - render warning code blocks
  - serialize published MdArticle to human-readable format?
 """
@@ -9,7 +8,6 @@ import bs4
 import dataclasses
 import datetime
 import dateutil.parser
-import distutils.dir_util
 import frontmatter
 import json
 import markdown_it
@@ -17,7 +15,10 @@ import markdown_it.token
 import markdown_it.tree
 import pathlib
 import pickle
+import pprint
 import pytz
+import shutil
+import toml
 
 
 MAIN_DIR = pathlib.Path(__file__).resolve().parent
@@ -32,10 +33,11 @@ LOCAL_TZ = pytz.timezone("US/Eastern")
 
 @dataclasses.dataclass
 class MdArticle:
-    md: markdown_it.MarkdownIt
+    md: markdown_it.MarkdownIt = dataclasses.field(repr=False)
     path: pathlib.Path
 
     def __post_init__(self):
+        # dataclass hook, runs after __init__
         self.metadata, self.content = self.parse_file()
         md_tokens = self.parse_md()
         content_html = self.render_md(md_tokens)
@@ -90,8 +92,10 @@ class MdArticle:
 class SiteGenerator:
     content_dir: pathlib.Path | str
     output_dir: pathlib.Path | str
+    republish: bool = False
 
     def __post_init__(self):
+        # dataclass hook, runs after __init__
         if not isinstance(self.content_dir, pathlib.Path):
             self.content_dir = pathlib.Path(self.content_dir)
         assert self.content_dir.exists(), "No content!"
@@ -101,11 +105,11 @@ class SiteGenerator:
 
         self.menu_data_path = self.output_dir / "etc" / "menu_data.json"
         self.md = markdown_it.MarkdownIt()
-        self.publish_cache_path = self.output_dir / "etc" / "publish_cache.pickle"
+        self.publish_cache_path = self.output_dir / "publish_cache.pickle"
         self.publish_cache = self.get_publish_cache()
 
     def get_publish_cache(self) -> dict:
-        if not self.publish_cache_path.exists():
+        if not self.publish_cache_path.exists() or self.republish:
             publish_cache = {}
         else:
             with open(self.publish_cache_path, "rb") as f:
@@ -115,20 +119,68 @@ class SiteGenerator:
     def get_articles_to_publish(self) -> list[MdArticle]:
         articles_to_publish = []
         for path in self.content_dir.glob('**/*.md'):
-            if path not in self.publish_cache:
-                articles_to_publish.append(MdArticle(self.md, path))
+            if path not in self.publish_cache or self.republish is True:
+                article = MdArticle(self.md, path)
+                if not article.metadata.get("draft"):
+                    articles_to_publish.append(article)
 
         return articles_to_publish
 
-    def publish_articles(self, articles_to_publish: list[MdArticle]):
+    def write_scaffolding(self):
         if not self.output_dir.exists():
-            distutils.dir_util.copy_tree(str(OUTPUT_TEMPLATE_DIR), str(self.output_dir))
+            shutil.copytree(OUTPUT_TEMPLATE_DIR, self.output_dir)
+        else:
+            for template_file in OUTPUT_TEMPLATE_DIR.iterdir():
+                target_file = self.output_dir / template_file.name
+                if template_file.is_file():
+                    shutil.copyfile(template_file, target_file)
+                else:
+                    if target_file.exists():
+                        shutil.rmtree(target_file)
+                    shutil.copytree(template_file, target_file)
+
+    def write_title(self):
+        site_config_file = self.content_dir / "site.toml"
+        title = None
+        if site_config_file.exists():
+            with open(site_config_file, "r") as f:
+                try:
+                    title = toml.load(f)["config"]["title"]
+                except KeyError:
+                    pass
+
+        if title:
+            output_index_file = self.output_dir / "index.html"
+            assert output_index_file.exists()
+
+            with open(output_index_file, "r") as f:
+                html = f.read()
+            soup = bs4.BeautifulSoup(html, "html.parser")
+
+            title_value = soup.find(id="title-value")
+            title_value.string.replace_with(title)
+
+            with open(output_index_file, "w") as f:
+                f.write(soup.prettify())
+
+    def write_menu_data(self):
+        get_published = lambda info: info["published"]
+        publish_data = sorted(self.publish_cache.values(), key=get_published)[-5:]
+
+        get_menu_item = lambda info: {"name": info["name"], "url": info["output_path"].name}
+        menu_data = map(get_menu_item, publish_data)
+        with open(self.menu_data_path, "w") as f:
+            json.dump(list(menu_data), f)
+
+    def publish_articles(self, articles_to_publish: list[MdArticle]):
+        self.write_scaffolding()
+        self.write_title()
 
         for md_article in articles_to_publish:
             html_filename = md_article.path.with_suffix(".html").name
             html_path = self.output_dir / html_filename
 
-            if not html_path.exists():
+            if not html_path.exists() or self.republish:
                 with open(html_path, "w") as f:
                     f.write(md_article.html)
 
@@ -143,29 +195,23 @@ class SiteGenerator:
 
         self.write_menu_data()
 
-    def write_menu_data(self):
-        get_published = lambda info: info["published"]
-        publish_data = sorted(self.publish_cache.values(), key=get_published)[-5:]
-
-        get_menu_item = lambda info: {"name": info["name"], "url": info["output_path"].name}
-        menu_data = map(get_menu_item, publish_data)
-        with open(self.menu_data_path, "w") as f:
-            json.dump(list(menu_data), f)
-
 
 def main(
     content_dir: (pathlib.Path | str) = (PROJECT_ROOT / "content"),
     output_dir: (pathlib.Path | str) = (PROJECT_ROOT / "output"),
     dry_run: bool = False,
+    republish: bool = False,
 ):
-    site_generator = SiteGenerator(content_dir, output_dir)
+    site_generator = SiteGenerator(content_dir, output_dir, republish=republish)
     articles_to_publish = site_generator.get_articles_to_publish()
 
     if dry_run:
-        print(f"[dry run] to publish: {articles_to_publish}")
+        print("[dry run] to publish:")
+        pprint.pprint(articles_to_publish)
 
     elif articles_to_publish:
-        print(f"to publish: {articles_to_publish}")
+        print("to publish:")
+        pprint.pprint(articles_to_publish)
         site_generator.publish_articles(articles_to_publish)
 
     else:
