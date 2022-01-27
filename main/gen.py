@@ -1,9 +1,3 @@
-"""
-TODO:
- - render warning code blocks
- - serialize published MdArticle to human-readable format?
-"""
-
 import bs4
 import dataclasses
 import datetime
@@ -14,7 +8,6 @@ import markdown_it
 import markdown_it.token
 import markdown_it.tree
 import pathlib
-import pickle
 import pprint
 import pytz
 import shutil
@@ -26,6 +19,7 @@ PROJECT_ROOT = MAIN_DIR.parent
 
 TEMPLATES_DIR = MAIN_DIR / "templates"
 MAIN_TEMPLATE_PATH = TEMPLATES_DIR / "main.html"
+WARN_TEMPLATE_PATH = TEMPLATES_DIR / "warn.html"
 OUTPUT_TEMPLATE_DIR = TEMPLATES_DIR / "output"
 
 LOCAL_TZ = pytz.timezone("US/Eastern")
@@ -41,6 +35,7 @@ class MdArticle:
         self.metadata, self.content = self.parse_file()
         md_tokens = self.parse_md()
         content_html = self.render_md(md_tokens)
+        # content_html = self.md.render(self.content)
         self.html = self.render(content_html)
 
     def parse_file(self) -> tuple[dict, str]:
@@ -75,10 +70,9 @@ class MdArticle:
     def get_published_date(self) -> datetime.datetime:
         published = self.metadata.get("published")
         if not published or published == "now":
-            published = datetime.datetime.utcnow()
+            published = datetime.datetime.utcnow().astimezone(LOCAL_TZ)
         else:
             published = dateutil.parser.parse(published)
-            published = LOCAL_TZ.localize(published, is_dst=None).astimezone(pytz.utc)
         return published
 
     def get_name(self) -> str:
@@ -86,6 +80,17 @@ class MdArticle:
         if not name:
             name = self.path.stem.title().replace("_", " ")
         return name
+
+
+def render_warning(self, tokens, idx, options, env):
+    token = tokens[idx]
+    if token.info == "_Warn":
+        with open(WARN_TEMPLATE_PATH, "r") as f:
+            warn = f.read()
+        text = token.content
+        return warn % text
+    else:
+        return self.renderToken(tokens, idx, options, env)
 
 
 @dataclasses.dataclass
@@ -105,21 +110,26 @@ class SiteGenerator:
 
         self.menu_data_path = self.output_dir / "etc" / "menu_data.json"
         self.md = markdown_it.MarkdownIt()
-        self.publish_cache_path = self.output_dir / "publish_cache.pickle"
-        self.publish_cache = self.get_publish_cache()
+        self.md.add_render_rule("fence", render_warning)
 
-    def get_publish_cache(self) -> dict:
-        if not self.publish_cache_path.exists() or self.republish:
-            publish_cache = {}
+        self.site_config_path = self.content_dir / "site.toml"
+        self.site_config = self.get_site_config()
+
+    def get_site_config(self):
+        if self.site_config_path.exists():
+            with open(self.site_config_path, "r") as f:
+                return toml.load(f)
         else:
-            with open(self.publish_cache_path, "rb") as f:
-                publish_cache = pickle.load(f)
-        return publish_cache
+            return {}
 
     def get_articles_to_publish(self) -> list[MdArticle]:
         articles_to_publish = []
         for path in self.content_dir.glob('**/*.md'):
-            if path not in self.publish_cache or self.republish is True:
+            publish_info = next(
+                i for i in self.site_config.get("articles", {}).values() if i.get("content_path") == path,
+                None
+            )
+            if not publish_info or self.republish is True:
                 article = MdArticle(self.md, path)
                 if not article.metadata.get("draft"):
                     articles_to_publish.append(article)
@@ -164,10 +174,13 @@ class SiteGenerator:
                 f.write(soup.prettify())
 
     def write_menu_data(self):
-        get_published = lambda info: info["published"]
-        publish_data = sorted(self.publish_cache.values(), key=get_published)[-5:]
+        get_published = lambda info: dateutil.parser.parse(info["published"])
+        publish_data = sorted(self.site_config.get("articles", {}).values(), key=get_published)[-5:]
 
-        get_menu_item = lambda info: {"name": info["name"], "url": info["output_path"].name}
+        get_menu_item = lambda info: {
+            "name": info["name"],
+            "url": pathlib.Path(info["output_path"]).name
+        }
         menu_data = map(get_menu_item, publish_data)
         with open(self.menu_data_path, "w") as f:
             json.dump(list(menu_data), f)
@@ -175,6 +188,9 @@ class SiteGenerator:
     def publish_articles(self, articles_to_publish: list[MdArticle]):
         self.write_scaffolding()
         self.write_title()
+
+        if "articles" not in self.site_config:
+            self.site_config["articles"] = {}
 
         for md_article in articles_to_publish:
             html_filename = md_article.path.with_suffix(".html").name
@@ -184,14 +200,20 @@ class SiteGenerator:
                 with open(html_path, "w") as f:
                     f.write(md_article.html)
 
-                self.publish_cache[md_article.path] = {
-                    "output_path": html_path,
-                    "published": md_article.get_published_date(),
+                article_id = md_article.path.stem.title()
+                publish_info = self.site_config["articles"].get(article_id, {
                     "name": md_article.get_name(),
-                }
+                    "published": md_article.get_published_date().strftime("%Y %B %d"),
+                    "content_path": str(md_article.path),
+                    "output_path": str(html_path),
+                })
+                publish_info.update({
+                    "last_modified": datetime.datetime.utcnow().astimezone(LOCAL_TZ).strftime("%Y %B %d"),
+                })
+                self.site_config["articles"][article_id] = publish_info
 
-        with open(self.publish_cache_path, "wb") as f:
-            pickle.dump(self.publish_cache, f)
+        with open(self.site_config_path, "w") as f:
+            toml.dump(self.site_config, f)
 
         self.write_menu_data()
 
