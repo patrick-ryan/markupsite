@@ -11,7 +11,7 @@ import pathlib
 import pprint
 import pytz
 import shutil
-import toml
+import tomlkit
 
 
 MAIN_DIR = pathlib.Path(__file__).resolve().parent
@@ -67,9 +67,13 @@ class MdArticle:
 
         return soup.prettify()
 
+    @property
+    def id(self):
+        return self.path.stem.replace(".", "_")
+
     def get_published_date(self) -> datetime.datetime:
         published = self.metadata.get("published")
-        if not published or published == "now":
+        if not published:
             published = datetime.datetime.utcnow().astimezone(LOCAL_TZ)
         else:
             published = dateutil.parser.parse(published)
@@ -81,8 +85,28 @@ class MdArticle:
             name = self.path.stem.title().replace("_", " ")
         return name
 
+    def publish(self, html_path, published_data=None):
+        if not published_data:
+            return {
+                "name": self.get_name(),
+                "published": self.get_published_date().strftime("%Y %B %d"),
+                "content_path": str(self.path),
+                "output_path": str(html_path),
+            }
+        else:
+            published_data.update({
+                "name": self.metadata.get("name") or published_data["name"],
+                "published": (
+                    self.metadata["published"].strftime("%Y %B %d") if self.metadata.get("published") else None
+                ) or published_data["published"],
+                "content_path": str(self.path),
+                "output_path": str(html_path),
+                "republished": datetime.datetime.utcnow().astimezone(LOCAL_TZ).strftime("%Y %B %d"),
+            })
+        return published_data
 
-def render_warning(self, tokens, idx, options, env):
+
+def render_fence(self, tokens, idx, options, env):
     token = tokens[idx]
     if token.info == "_Warn":
         with open(WARN_TEMPLATE_PATH, "r") as f:
@@ -110,15 +134,15 @@ class SiteGenerator:
 
         self.menu_data_path = self.output_dir / "etc" / "menu_data.json"
         self.md = markdown_it.MarkdownIt()
-        self.md.add_render_rule("fence", render_warning)
+        self.md.add_render_rule("fence", render_fence)
 
         self.site_config_path = self.content_dir / "site.toml"
         self.site_config = self.get_site_config()
 
-    def get_site_config(self):
+    def get_site_config(self) -> tomlkit.TOMLDocument:
         if self.site_config_path.exists():
             with open(self.site_config_path, "r") as f:
-                return toml.load(f)
+                return tomlkit.load(f)
         else:
             return {}
 
@@ -126,7 +150,7 @@ class SiteGenerator:
         articles_to_publish = []
         for path in self.content_dir.glob('**/*.md'):
             publish_info = next(
-                i for i in self.site_config.get("articles", {}).values() if i.get("content_path") == path,
+                iter(i for i in self.site_config.get("articles", {}).values() if i.get("content_path") == path),
                 None
             )
             if not publish_info or self.republish is True:
@@ -150,14 +174,10 @@ class SiteGenerator:
                     shutil.copytree(template_file, target_file)
 
     def write_title(self):
-        site_config_file = self.content_dir / "site.toml"
-        title = None
-        if site_config_file.exists():
-            with open(site_config_file, "r") as f:
-                try:
-                    title = toml.load(f)["config"]["title"]
-                except KeyError:
-                    pass
+        try:
+            title = self.site_config["config"]["title"]
+        except KeyError:
+            title = None
 
         if title:
             output_index_file = self.output_dir / "index.html"
@@ -185,12 +205,15 @@ class SiteGenerator:
         with open(self.menu_data_path, "w") as f:
             json.dump(list(menu_data), f)
 
+    def get_last_article(self):
+        return next(reversed(dict(self.site_config["articles"]).items()), (None, None))
+
     def publish_articles(self, articles_to_publish: list[MdArticle]):
         self.write_scaffolding()
         self.write_title()
 
         if "articles" not in self.site_config:
-            self.site_config["articles"] = {}
+            self.site_config.add("articles", tomlkit.table())
 
         for md_article in articles_to_publish:
             html_filename = md_article.path.with_suffix(".html").name
@@ -200,20 +223,22 @@ class SiteGenerator:
                 with open(html_path, "w") as f:
                     f.write(md_article.html)
 
-                article_id = md_article.path.stem.title()
-                publish_info = self.site_config["articles"].get(article_id, {
-                    "name": md_article.get_name(),
-                    "published": md_article.get_published_date().strftime("%Y %B %d"),
-                    "content_path": str(md_article.path),
-                    "output_path": str(html_path),
-                })
-                publish_info.update({
-                    "last_modified": datetime.datetime.utcnow().astimezone(LOCAL_TZ).strftime("%Y %B %d"),
-                })
-                self.site_config["articles"][article_id] = publish_info
+                published_data = self.site_config["articles"].get(md_article.id)
+                new_published_data = md_article.publish(html_path, published_data=published_data)
+
+                _, last_article_table = self.get_last_article()
+
+                self.site_config["articles"][md_article.id] = new_published_data
+                if not published_data:
+                    # not republished, so set indentation
+                    if last_article_table:
+                        indent_level = last_article_table.trivia.indent.count(" ")
+                    else:
+                        indent_level = 2
+                    self.site_config["articles"][md_article.id].indent(indent_level)
 
         with open(self.site_config_path, "w") as f:
-            toml.dump(self.site_config, f)
+            tomlkit.dump(self.site_config, f)
 
         self.write_menu_data()
 
